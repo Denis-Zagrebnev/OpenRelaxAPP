@@ -1,5 +1,6 @@
 """VK LongPoll бот для поиска мероприятий через KudaGo API (VKBottle)."""
 
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -46,7 +47,7 @@ service: EventService | None = None
 
 def get_main_keyboard() -> str:
     """Главное меню бота."""
-    kb = Keyboard(one_time=True)
+    kb = Keyboard(one_time=False)
 
     kb.add(
         Text("🏙 Выбрать город", payload={"action": "city"}),
@@ -75,7 +76,7 @@ def get_main_keyboard() -> str:
 
 def get_city_keyboard() -> str:
     """Клавиатура выбора города."""
-    kb = Keyboard(one_time=True)
+    kb = Keyboard(one_time=False)
 
     for index, (code, name) in enumerate(CITIES.items()):
         kb.add(
@@ -132,7 +133,7 @@ def get_date_keyboard() -> str:
 
 def get_category_keyboard() -> str:
     """Клавиатура выбора категории мероприятия."""
-    kb = Keyboard(one_time=True)
+    kb = Keyboard(one_time=False)
 
     buttons = list(CATEGORY_MAP.items())
 
@@ -209,9 +210,12 @@ async def send_message(
     message: Message, text: str, keyboard: str | None = None
 ):
     """Отправить сообщение через VKBottle."""
-    kwargs: dict = {"message": text}
+
+    kwargs = {"message": text}
+
     if keyboard:
         kwargs["keyboard"] = keyboard
+
     await message.answer(**kwargs)
  
 
@@ -225,18 +229,24 @@ def get_user_state(user_id: int) -> dict:
 # ======================================================================
 
 
-@bl.message(text=START_COMMANDS)
+def _start_rule(message: Message) -> bool:
+    return message.text.lower() in START_COMMANDS
+
+
+@bl.message(rules.FuncRule(_start_rule))
 async def start_handler(message: Message):
     """Команды: начать, привет, меню."""
     state = get_user_state(message.from_id)
     state.pop("waiting_for", None)
     state.pop("categories", None)
+
     await send_message(
         message,
         "Привет! Я бот для поиска мероприятий.\n\n"
         "Выберите действие из меню или введите команду.",
         keyboard=get_main_keyboard(),
     )
+
 
 @bl.message(text="🏙 Выбрать город")
 async def city_selection_handler(message: Message):
@@ -464,27 +474,46 @@ async def payload_next_page(message: Message):
 
 
 # Единый обработчик для city_, date_, category_ префиксов
-def _payload_city_rule(message: Message) -> bool:
+
+def _get_payload(message: Message) -> dict:
     payload = message.payload
-    return isinstance(payload, dict) and payload.get("action", "").startswith("city_")
+
+    if isinstance(payload, str):
+        return json.loads(payload)
+
+    return payload
+
+
+def _payload_city_rule(message: Message) -> bool:
+    payload = _get_payload(message)
+    return (
+        isinstance(payload, dict)
+        and payload.get("action", "").startswith("city_")
+    )
 
 
 def _payload_date_rule(message: Message) -> bool:
-    payload = message.payload
-    return isinstance(payload, dict) and payload.get("action", "").startswith("date_")
+    payload = _get_payload(message)
+    return (
+        isinstance(payload, dict)
+        and payload.get("action", "").startswith("date_")
+    )
 
 
 def _payload_category_rule(message: Message) -> bool:
-    payload = message.payload
-    return isinstance(payload, dict) and payload.get("action", "").startswith("category_")
+    payload = _get_payload(message)
+    return (
+        isinstance(payload, dict)
+        and payload.get("action", "").startswith("category_")
+    )
 
 
 @bl.message(rules.FuncRule(_payload_city_rule))
 # async def payload_city(message: Message):
 async def payload_city(message: Message):
-    print("CITY PAYLOAD:", message.payload)
     """Выбор города."""
-    action = message.payload.get("action", "")
+    payload = json.loads(message.payload)
+    action = payload.get("action", "")
     city_code = action.replace("city_", "")
     city_name = CITIES.get(city_code, city_code)
     state = get_user_state(message.from_id)
@@ -499,16 +528,23 @@ async def payload_city(message: Message):
 @bl.message(rules.FuncRule(_payload_date_rule))
 async def payload_date(message: Message):
     """Выбор даты."""
-    action = message.payload.get("action", "")
+    payload = json.loads(message.payload)
+    action = payload.get("action", "")
     date_str = action.replace("date_", "")
     try:
-        date = datetime.strptime(date_str, "%d.%m")
+        date = datetime.strptime(
+            f"{date_str}.{datetime.now().year}",
+            "%d.%m.%Y"
+        )
         state = get_user_state(message.from_id)
         state["date"] = date
+
+        kb = get_category_keyboard()
+ 
         await send_message(
             message,
             f"Дата: {date.strftime('%d.%m.%Y')}. Выберите категорию.",
-            keyboard=get_category_keyboard(),
+            keyboard=kb,
         )
     except ValueError:
         await send_message(message, "Произошла ошибка. Попробуйте позже.")
@@ -517,10 +553,13 @@ async def payload_date(message: Message):
 @bl.message(rules.FuncRule(_payload_category_rule))
 async def payload_category(message: Message):
     """Выбор категории."""
-    action = message.payload.get("action", "")
+    payload = _get_payload(message)
+    action = payload.get("action", "")
+
     category_code = action.replace("category_", "")
     state = get_user_state(message.from_id)
     state["categories"] = [category_code]
+
     city = state.get("city", settings.DEFAULT_CITY)
     date = state.get("date")
     if not date:
