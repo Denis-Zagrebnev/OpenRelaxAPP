@@ -2,8 +2,7 @@
 
 import logging
 
-from vk_bot import VKBot
-from config import settings
+from vk_bot import main
 
 
 def setup_logging():
@@ -14,17 +13,6 @@ def setup_logging():
     )
 
 
-def main():
-    """Запуск бота."""
-    setup_logging()
-
-    if not settings.VK_TOKEN:
-        logging.error("Не задан VK_TOKEN в .env")
-        return
-
-    bot = VKBot(token=settings.VK_TOKEN)
-    bot.run()
-
-
 if __name__ == "__main__":
+    setup_logging()
     main()

@@ -164,19 +164,13 @@ class KudaGoAPI:
         if detailed:
             body_text = data.get("body_text", "") or description
 
+        location_name = data.get("location", "")
+
         return Event(
             event_id=data.get("id"),
             title=data.get("title", "Без названия"),
             slug=data.get("slug", ""),
-            location = data.get("location", {})
-
-            location_name = (
-                location.get("name", "")
-                if isinstance(location, dict)
-                else location
-            ),
             location_name=location_name,
-
             address=data.get("address", ""),
             description=description,
             body_text=body_text,
