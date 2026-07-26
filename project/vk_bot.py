@@ -2,7 +2,9 @@
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from vkbottle import Bot, Keyboard, KeyboardButtonColor, Text
 from vkbottle.bot import BotLabeler, Message, rules
@@ -214,9 +216,46 @@ async def send_message(
     kwargs = {"message": text}
 
     if keyboard:
-        kwargs["keyboard"] = keyboard
+        # Validate locally before calling VK.  The log records only shape/size;
+        # it never includes the token, message text, or keyboard contents.
+        keyboard_data = json.loads(keyboard)
+        button_count = sum(len(row) for row in keyboard_data.get("buttons", []))
+        logger.info(
+            "Sending VK message: peer_id=%s, keyboard_buttons=%d, keyboard_bytes=%d",
+            message.peer_id,
+            button_count,
+            len(keyboard.encode("utf-8")),
+        )
+        try:
+            # VKBottle 4.10 Message.answer() uses the plural ``peer_ids`` API
+            # parameter even for one recipient.  Use the explicit single-peer
+            # form for keyboards so VK validates and stores the keyboard on the
+            # exact conversation message.
+            response = await message.ctx_api.messages.send(
+                peer_id=message.peer_id,
+                message=text,
+                keyboard=keyboard,
+                random_id=0,
+            )
+            logger.info(
+                "VK keyboard message accepted: peer_id=%s, response_id=%s",
+                message.peer_id,
+                response if isinstance(response, int) else "n/a",
+            )
+            return response
+        except Exception as exc:
+            logger.error("VK keyboard message send failed: %s", type(exc).__name__)
+            raise
+    else:
+        logger.debug("Sending VK message: peer_id=%s, keyboard_buttons=0", message.peer_id)
 
-    await message.answer(**kwargs)
+    try:
+        return await message.answer(**kwargs)
+    except Exception as exc:
+        # Keep diagnostics credential-safe: log the exception class, not its
+        # representation, which can contain request details in some clients.
+        logger.error("VK message send failed: %s", type(exc).__name__)
+        raise
  
 
 def get_user_state(user_id: int) -> dict:
@@ -230,7 +269,7 @@ def get_user_state(user_id: int) -> dict:
 
 
 def _start_rule(message: Message) -> bool:
-    return message.text.lower() in START_COMMANDS
+    return bool(message.text) and message.text.strip().casefold() in START_COMMANDS
 
 
 @bl.message(rules.FuncRule(_start_rule))
@@ -476,12 +515,16 @@ async def payload_next_page(message: Message):
 # Единый обработчик для city_, date_, category_ префиксов
 
 def _get_payload(message: Message) -> dict:
+    """Return a VK button payload regardless of VKBottle's input form."""
     payload = message.payload
 
     if isinstance(payload, str):
-        return json.loads(payload)
+        try:
+            payload = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
+            return {}
 
-    return payload
+    return payload if isinstance(payload, dict) else {}
 
 
 def _payload_city_rule(message: Message) -> bool:
@@ -512,7 +555,7 @@ def _payload_category_rule(message: Message) -> bool:
 # async def payload_city(message: Message):
 async def payload_city(message: Message):
     """Выбор города."""
-    payload = json.loads(message.payload)
+    payload = _get_payload(message)
     action = payload.get("action", "")
     city_code = action.replace("city_", "")
     city_name = CITIES.get(city_code, city_code)
@@ -528,7 +571,7 @@ async def payload_city(message: Message):
 @bl.message(rules.FuncRule(_payload_date_rule))
 async def payload_date(message: Message):
     """Выбор даты."""
-    payload = json.loads(message.payload)
+    payload = _get_payload(message)
     action = payload.get("action", "")
     date_str = action.replace("date_", "")
     try:
@@ -623,7 +666,11 @@ def main():
         return
 
     bot = create_bot()
-    logger.info("Бот запущен...")
+    logger.info(
+        "Бот запущен: pid=%d, source=%s",
+        os.getpid(),
+        Path(__file__).resolve(),
+    )
     bot.run()
 
 
